@@ -34,6 +34,8 @@ set foldlevelstart=99
 " -----------------------------
 " Plugin manager: vim-plug
 " -----------------------------
+" vim-plug is provided by Nix (see programs.neovim.extraPackages in
+" nixos-config), so it is already on the runtimepath.
 call plug#begin('~/.local/share/nvim/plugged')
 
 Plug 'morhetz/gruvbox'
@@ -150,20 +152,41 @@ EOF
 " LSP setup (new API)
 " -----------------------------
 lua << EOF
--- Standard LSP servers
-vim.lsp.config('pyright', { cmd = { 'pyright-langserver', '--stdio' }, filetypes = { 'python' }, root_markers = { 'pyproject.toml', 'setup.py', 'requirements.txt' } })
-vim.lsp.config('yamlls', { cmd = { 'yaml-language-server', '--stdio' }, filetypes = { 'yaml' }, root_markers = { '.git' } })
-vim.lsp.config('bashls', { cmd = { 'bash-language-server', 'start' }, filetypes = { 'sh' }, root_markers = { '.git' } })
-vim.lsp.config('jdtls', { cmd = { 'jdt-language-server' }, filetypes = { 'java' }, root_markers = { 'pom.xml', 'build.gradle' } })
+-- Only register servers whose binary actually exists on this machine; an
+-- absent binary would otherwise throw on every buffer open.
+local function have(cmd) return vim.fn.executable(cmd) == 1 end
+local servers = {}
 
--- Ballerina LSP
-vim.lsp.config('ballerina', {
+if have('pyright-langserver') then
+  vim.lsp.config('pyright', { cmd = { 'pyright-langserver', '--stdio' }, filetypes = { 'python' }, root_markers = { 'pyproject.toml', 'setup.py', 'requirements.txt' } })
+  servers[#servers + 1] = 'pyright'
+end
+if have('yaml-language-server') then
+  vim.lsp.config('yamlls', { cmd = { 'yaml-language-server', '--stdio' }, filetypes = { 'yaml' }, root_markers = { '.git' } })
+  servers[#servers + 1] = 'yamlls'
+end
+if have('bash-language-server') then
+  vim.lsp.config('bashls', { cmd = { 'bash-language-server', 'start' }, filetypes = { 'sh' }, root_markers = { '.git' } })
+  servers[#servers + 1] = 'bashls'
+end
+if have('jdt-language-server') then
+  vim.lsp.config('jdtls', { cmd = { 'jdt-language-server' }, filetypes = { 'java' }, root_markers = { 'pom.xml', 'build.gradle' } })
+  servers[#servers + 1] = 'jdtls'
+end
+
+-- Ballerina LSP (only when the Ballerina toolchain is installed)
+if have('bal') then
+  vim.lsp.config('ballerina', {
     cmd = { 'bal', 'start-language-server' },
     filetypes = { 'ballerina' },
     root_markers = { 'Ballerina.toml', '.bal' },
-})
+  })
+  servers[#servers + 1] = 'ballerina'
+end
 
-vim.lsp.enable({ 'pyright', 'yamlls', 'bashls', 'jdtls', 'ballerina' })
+if #servers > 0 then
+  vim.lsp.enable(servers)
+end
 EOF
 
 " -----------------------------
@@ -172,22 +195,23 @@ EOF
 lua << EOF
 vim.filetype.add({ extension = { bal = 'ballerina' } })
 
-local function start_ballerina_lsp()
-    local root_dir = vim.fs.dirname(vim.fs.find({ 'Ballerina.toml' }, { upward = true })[1])
-    if not root_dir then
-        root_dir = vim.fn.expand('%:p:h')
-    end
-    vim.lsp.start({
-        name = 'ballerina-lsp',
-        cmd = { 'bal', 'start-language-server' },
-        root_dir = root_dir,
-    })
-end
+-- Only auto-start when the Ballerina toolchain is actually installed.
+if vim.fn.executable('bal') == 1 then
+  local function start_ballerina_lsp()
+      local found = vim.fs.find({ 'Ballerina.toml' }, { upward = true })[1]
+      local root_dir = found and vim.fs.dirname(found) or vim.fn.expand('%:p:h')
+      vim.lsp.start({
+          name = 'ballerina-lsp',
+          cmd = { 'bal', 'start-language-server' },
+          root_dir = root_dir,
+      })
+  end
 
-vim.api.nvim_create_autocmd('FileType', {
-    pattern = 'ballerina',
-    callback = start_ballerina_lsp,
-})
+  vim.api.nvim_create_autocmd('FileType', {
+      pattern = 'ballerina',
+      callback = start_ballerina_lsp,
+  })
+end
 EOF
 
 " -----------------------------
