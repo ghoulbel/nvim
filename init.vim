@@ -169,8 +169,10 @@ if have('bash-language-server') then
   vim.lsp.config('bashls', { cmd = { 'bash-language-server', 'start' }, filetypes = { 'sh' }, root_markers = { '.git' } })
   servers[#servers + 1] = 'bashls'
 end
-if have('jdt-language-server') then
-  vim.lsp.config('jdtls', { cmd = { 'jdt-language-server' }, filetypes = { 'java' }, root_markers = { 'pom.xml', 'build.gradle' } })
+-- NixOS ships the Eclipse JDT language server as `jdtls`; other distributions
+-- use `jdt-language-server`. Accept either so the guard matches reality.
+if have('jdtls') or have('jdt-language-server') then
+  vim.lsp.config('jdtls', { cmd = { have('jdtls') and 'jdtls' or 'jdt-language-server' }, filetypes = { 'java' }, root_markers = { 'pom.xml', 'build.gradle' } })
   servers[#servers + 1] = 'jdtls'
 end
 
