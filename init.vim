@@ -124,9 +124,6 @@ for _, cmd in ipairs({
   'pyright-langserver',
   'yaml-language-server',
   'bash-language-server',
-  'jdtls',
-  'jdt-language-server',
-  'bal',
 }) do
   if not have(cmd) then missing[#missing + 1] = cmd end
 end
