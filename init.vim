@@ -109,24 +109,9 @@ if have('bash-language-server') then
   vim.lsp.config('bashls', { cmd = { 'bash-language-server', 'start' }, filetypes = { 'sh' }, root_markers = { '.git' } })
   servers[#servers + 1] = 'bashls'
 end
--- NixOS ships the Eclipse JDT language server as `jdtls`; other distributions
--- use `jdt-language-server`. Accept either so the guard matches reality.
-if have('jdtls') or have('jdt-language-server') then
-  vim.lsp.config('jdtls', { cmd = { have('jdtls') and 'jdtls' or 'jdt-language-server' }, filetypes = { 'java' }, root_markers = { 'pom.xml', 'build.gradle' } })
-  servers[#servers + 1] = 'jdtls'
-end
-
--- Ballerina is registered and started in one place only: vim.lsp.enable()
--- below attaches the client on the matching filetype, so an extra FileType
--- autocmd would register the same server a second time under another name.
-if have('bal') then
-  vim.lsp.config('ballerina', {
-    cmd = { 'bal', 'start-language-server' },
-    filetypes = { 'ballerina' },
-    root_markers = { 'Ballerina.toml', '.bal' },
-  })
-  servers[#servers + 1] = 'ballerina'
-end
+-- Java (JDT) and Ballerina servers are opt-in: install `jdt-language-server`
+-- / `bal` on the machine and uncomment the blocks below, or they will simply
+-- not be registered and no warning will be emitted for absent servers.
 
 if #servers > 0 then
   vim.lsp.enable(servers)
