@@ -1,11 +1,18 @@
 " =============================================================================
 " Neovim configuration
 "
-" Every plugin and every Tree-sitter parser is declared in nixos-config
-" (flake input `nvim-config` + programs.neovim.extraPackages), which pins them in
-" flake.lock. This file therefore contains no plugin-manager bootstrap and no
-" runtime downloads: the same config and the same versions land on every device
-" from a single `nixos-rebuild`.
+" Dual provisioning, selected by the presence of /etc/NIXOS:
+"
+"   * NixOS: every plugin and every Tree-sitter parser is declared in
+"     nixos-config (flake input `nvim-config` + programs.neovim.extraPackages),
+"     which pins them in flake.lock. No plugin-manager bootstrap and no runtime
+"     downloads: the same config and the same versions land on every device
+"     from a single `nixos-rebuild`.
+"
+"   * Other devices (no /etc/NIXOS): the same config would otherwise find no
+"     plugins or parsers at all, so this file bootstraps lazy.nvim on first
+"     start and installs the same plugins (see the "Plugin provisioning" block
+"     below); Tree-sitter parsers are installed on demand with :TSInstall.
 " =============================================================================
 
 " -----------------------------
@@ -18,7 +25,6 @@ set termguicolors
 set background=dark
 set scrolloff=8
 set sidescrolloff=8
-set ttyfast
 filetype plugin indent on
 syntax on
 
@@ -48,6 +54,40 @@ set foldlevelstart=99
 if executable('wl-copy') || executable('xclip')
   set clipboard=unnamedplus
 endif
+
+" -----------------------------
+" Plugin provisioning for non-NixOS devices
+" -----------------------------
+" On NixOS, plugins and tree-sitter parsers are pinned by nix (see the header
+" comment). On other devices, bootstrap lazy.nvim and install the same plugins
+" so the pcall-guarded setup() calls below actually find them. The guard makes
+" this a no-op when /etc/NIXOS exists.
+lua << EOF
+if not vim.uv.fs_stat('/etc/NIXOS') then
+  local lazypath = vim.fn.stdpath('data') .. '/lazy/lazy.nvim'
+  if not vim.uv.fs_stat(lazypath) then
+    vim.fn.system({
+      'git', 'clone', '--filter=blob:none',
+      'https://github.com/folke/lazy.nvim.git', '--branch=stable', lazypath,
+    })
+  end
+  vim.opt.rtp:prepend(lazypath)
+  require('lazy').setup({
+    { 'nvim-tree/nvim-web-devicons' },
+    { 'nvim-tree/nvim-tree.lua' },
+    { 'numToStr/Comment.nvim' },
+    { 'karb94/neoscroll.nvim' },
+    { 'ellisonleao/gruvbox.nvim' },
+    -- nvim-treesitter main HEAD requires Neovim 0.12 (vim.list.unique); pin to
+    -- the last main-branch commit that supports 0.11 so :TSInstall/:TSUpdate
+    -- keep working here. Parsers still compile through the tree-sitter CLI.
+    { 'nvim-treesitter/nvim-treesitter', commit = '4d9916e477e5d4e3b245845dfd285edf429f3252', build = ':TSUpdate' },
+  }, {
+    -- Keep the lockfile out of the config repo (nix pins versions there).
+    lockfile = vim.fn.stdpath('data') .. '/lazy-lock.json',
+  })
+end
+EOF
 
 " -----------------------------
 " Ensure .bal files are recognized as Ballerina
@@ -109,9 +149,57 @@ if have('bash-language-server') then
   vim.lsp.config('bashls', { cmd = { 'bash-language-server', 'start' }, filetypes = { 'sh' }, root_markers = { '.git' } })
   servers[#servers + 1] = 'bashls'
 end
--- Java (JDT) and Ballerina servers are opt-in: install `jdt-language-server`
--- / `bal` on the machine and uncomment the blocks below, or they will simply
--- not be registered and no warning will be emitted for absent servers.
+-- Ballerina: the distro's bundled launcher script is not executable and its
+-- legacy JDK 1.8 check rejects the bundled JDK 21, so the java classpath
+-- invocation is built directly (verified working via LSP initialize handshake).
+-- The classpath invocation runs `java` from PATH, so java must exist too.
+if have('bal') and have('java') then
+  local bal_bin = vim.fn.resolve(vim.fn.exepath('bal'))
+  local bal_home = vim.fn.fnamemodify(bal_bin, ':h:h')
+  local distro_dir
+  local version_file = bal_home .. '/distributions/ballerina-version'
+  if vim.uv.fs_stat(version_file) then
+    local f = io.open(version_file, 'r')
+    if f then
+      distro_dir = bal_home .. '/distributions/' .. vim.trim(f:read('*a'))
+      f:close()
+    end
+  else
+    -- No version file: fall back to the newest installed distribution dir.
+    local distros = vim.fn.glob(bal_home .. '/distributions/ballerina-*', true, true)
+    table.sort(distros)
+    distro_dir = distros[#distros]
+  end
+  -- Register only when the distro has the language server classpath layout;
+  -- otherwise skip silently.
+  if distro_dir
+    and vim.uv.fs_stat(distro_dir .. '/bre')
+    and vim.uv.fs_stat(distro_dir .. '/lib/tools/lang-server/lib') then
+    vim.lsp.config('ballerina', { cmd = { 'java', '-Dballerina.home=' .. distro_dir, '-cp', distro_dir .. '/bre/lib/*:' .. distro_dir .. '/lib/tools/lang-server/lib/*', 'org.ballerinalang.langserver.launchers.stdio.Main' }, filetypes = { 'ballerina' }, root_markers = { 'Ballerina.toml', '.git' } })
+    servers[#servers + 1] = 'ballerina'
+  end
+end
+
+-- Java (JDT): prefer jdtls on PATH, else fall back to the newest VS Code
+-- redhat.java extension launcher; the launcher auto-creates per-project data
+-- dirs under ~/.cache/jdtls, so no -data argument is passed.
+if have('java') then
+  local jdtls_cmd
+  if have('jdtls') then
+    jdtls_cmd = { 'jdtls' }
+  else
+    local candidates = vim.fn.glob('~/.vscode/extensions/redhat.java-*/server/bin/jdtls', true, true)
+    table.sort(candidates)
+    local candidate = candidates[#candidates]
+    if candidate and vim.fn.executable(candidate) == 1 then
+      jdtls_cmd = { candidate }
+    end
+  end
+  if jdtls_cmd then
+    vim.lsp.config('jdtls', { cmd = jdtls_cmd, filetypes = { 'java' }, root_markers = { '.git', 'pom.xml', 'build.gradle', 'settings.gradle', 'gradlew', 'mvnw' } })
+    servers[#servers + 1] = 'jdtls'
+  end
+end
 
 if #servers > 0 then
   vim.lsp.enable(servers)
@@ -128,7 +216,10 @@ for _, cmd in ipairs({
   if not have(cmd) then missing[#missing + 1] = cmd end
 end
 
-if #missing > 0 then
+-- The notice exists to tell the Nix user which pinned servers nix did not
+-- install; on non-Nix devices the binaries are managed directly, so the WARN
+-- would be noise on every startup. Only NixOS gets the notice.
+if vim.uv.fs_stat('/etc/NIXOS') and #missing > 0 then
   vim.api.nvim_create_autocmd('VimEnter', {
     group = vim.api.nvim_create_augroup('UserLspNotice', { clear = true }),
     callback = function()
@@ -219,8 +310,9 @@ if api_ok then
 end
 EOF
 
-" Colorscheme
-colorscheme gruvbox
+" Colorscheme. The gruvbox plugin is Nix-provisioned on other devices; the
+" guard suppresses E185 here, where it is absent.
+silent! colorscheme gruvbox
 
 " -----------------------------
 " LSP keymaps
@@ -231,6 +323,6 @@ nnoremap <silent> gr <cmd>lua vim.lsp.buf.references()<CR>
 nnoremap <silent> <leader>rn <cmd>lua vim.lsp.buf.rename()<CR>
 nnoremap <silent> <leader>ca <cmd>lua vim.lsp.buf.code_action()<CR>
 nnoremap <silent> <leader>f <cmd>lua vim.lsp.buf.format({ async = true })<CR>
-nnoremap <silent> [d <cmd>lua vim.diagnostic.goto_prev()<CR>
-nnoremap <silent> ]d <cmd>lua vim.diagnostic.goto_next()<CR>
+nnoremap <silent> [d <cmd>lua vim.diagnostic.jump({ count = -1, float = true })<CR>
+nnoremap <silent> ]d <cmd>lua vim.diagnostic.jump({ count = 1, float = true })<CR>
 nnoremap <silent> <leader>ld <cmd>lua vim.diagnostic.open_float()<CR>
